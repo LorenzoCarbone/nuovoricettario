@@ -285,7 +285,16 @@
             <div class="modal-body">
                 <input type="hidden" id="formRecipeId">
                 <div class="form-group"><label>Nome Ricetta *</label><input type="text" id="formNome" class="form-control" placeholder="Es. Pappa al pomodoro"></div>
-                <div class="form-group"><label>URL Immagine (opzionale)</label><input type="url" id="formImmagine" class="form-control" placeholder="Link immagine..."></div>
+                
+                <div class="form-group">
+                    <label>Immagine della ricetta</label>
+                    <input type="file" id="formImmagineFile" class="form-control" accept="image/*">
+                    <input type="hidden" id="formImmagine">
+                    <div id="uploadStatus" style="font-size: 0.85rem; color: var(--primary); margin-top: 5px; display: none;">
+                        Caricamento immagine in corso... ⏳
+                    </div>
+                </div>
+
                 <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
                     <div class="form-group"><label>Portata</label><select id="formPortata" class="form-control"></select></div>
                     <div class="form-group"><label>Porzioni Base</label><input type="number" id="formPorzioni" class="form-control" value="2" min="1"></div>
@@ -381,7 +390,6 @@
         let activeFilters = { portate: [], allergeni: [], ingredienti: [] };
         let tempIngredients = [];
         
-        // FIX PRINCIPALE: Rinominato da supabase a supabaseClient per evitare la collisione fatale
         let supabaseClient = null;
 
         // 3. TENTATIVO CONNESSIONE SUPABASE E AVVIO
@@ -413,7 +421,6 @@
         }
 
         window.onload = () => {
-            // Avvio istantaneo dell'App protetto da errori
             try { if (typeof lucide !== 'undefined') lucide.createIcons(); } catch(e) { console.warn("Icone non caricate"); }
             populateMultiSelects();
             renderRecipesUI();
@@ -753,6 +760,7 @@
                     document.getElementById('formRecipeId').value = r.id;
                     document.getElementById('formNome').value = r.nome || '';
                     document.getElementById('formImmagine').value = r.immagine || '';
+                    document.getElementById('formImmagineFile').value = '';
                     document.getElementById('formPortata').value = r.portata || '';
                     document.getElementById('formPorzioni').value = r.porzioni || 2;
                     document.getElementById('formPrep').value = r.preparazione || '';
@@ -763,9 +771,13 @@
                     document.getElementsByName('chk_tag').forEach(cb => { if((r.tags||[]).includes(cb.value)) cb.checked = true; });
                 }
             } else {
-                document.getElementById('formRecipeId').value = ''; document.getElementById('formNome').value = '';
-                document.getElementById('formImmagine').value = ''; document.getElementById('formPortata').value = '';
-                document.getElementById('formPorzioni').value = 2; document.getElementById('formPrep').value = '';
+                document.getElementById('formRecipeId').value = ''; 
+                document.getElementById('formNome').value = '';
+                document.getElementById('formImmagine').value = ''; 
+                document.getElementById('formImmagineFile').value = '';
+                document.getElementById('formPortata').value = '';
+                document.getElementById('formPorzioni').value = 2; 
+                document.getElementById('formPrep').value = '';
                 document.getElementById('formOrigine').value = '';
             }
             renderFormIngredients();
@@ -811,15 +823,59 @@
             safeCreateIcons();
         }
 
-        function saveRecipe() {
+        async function saveRecipe() {
             const id = document.getElementById('formRecipeId').value;
             const nome = document.getElementById('formNome').value.trim();
             if (!nome) return alert("Il nome della ricetta è obbligatorio.");
 
+            const btnSalva = document.querySelector('.modal-footer .btn-primary');
+            const uploadStatus = document.getElementById('uploadStatus');
+            
+            let urlImmagine = document.getElementById('formImmagine').value.trim(); // URL precedente (se esiste)
+            const fileInput = document.getElementById('formImmagineFile');
+            const file = fileInput.files[0];
+
+            // Se l'utente ha selezionato un nuovo file, lo carichiamo su Supabase
+            if (file) {
+                btnSalva.disabled = true; // Blocca il tasto per evitare doppi click
+                uploadStatus.style.display = 'block'; // Mostra la scritta "Caricamento..."
+                
+                try {
+                    // Genera un nome unico per il file usando la data attuale
+                    const fileExt = file.name.split('.').pop();
+                    const fileName = `ricetta_${Date.now()}.${fileExt}`;
+                    
+                    // Upload su Supabase Storage nel bucket 'immagini'
+                    const { data, error } = await supabaseClient.storage
+                        .from('immagini')
+                        .upload(fileName, file);
+
+                    if (error) throw error;
+
+                    // Ottieni il link pubblico dell'immagine appena caricata
+                    const { data: publicUrlData } = supabaseClient.storage
+                        .from('immagini')
+                        .getPublicUrl(fileName);
+
+                    urlImmagine = publicUrlData.publicUrl;
+                } catch (err) {
+                    console.error("Errore upload:", err);
+                    alert("Errore durante il caricamento dell'immagine. Riprova.");
+                    btnSalva.disabled = false;
+                    uploadStatus.style.display = 'none';
+                    return; // Ferma il salvataggio se l'upload fallisce
+                }
+            }
+
+            // Ripristina l'interfaccia
+            if (btnSalva) btnSalva.disabled = false;
+            if (uploadStatus) uploadStatus.style.display = 'none';
+
+            // Costruisci l'oggetto della ricetta con il nuovo urlImmagine
             const rData = {
                 id: id ? parseInt(id) : (appData.recipes.length > 0 ? Math.max(...appData.recipes.map(x=>x.id))+1 : 1),
                 nome: nome,
-                immagine: document.getElementById('formImmagine').value.trim(),
+                immagine: urlImmagine, // Usa l'URL caricato o quello vecchio
                 portata: document.getElementById('formPortata').value,
                 porzioni: parseInt(document.getElementById('formPorzioni').value) || 2,
                 ingredienti: tempIngredients,
@@ -833,9 +889,14 @@
                 const idx = appData.recipes.findIndex(x => x.id == id);
                 if(idx > -1) appData.recipes[idx] = rData;
                 if(currentRecipeId == id) showDetailView(id); 
-            } else appData.recipes.unshift(rData);
+            } else {
+                appData.recipes.unshift(rData);
+            }
 
-            saveData(); isFormDirty = false; closeModal('recipeModal'); showToast("Ricetta salvata!");
+            saveData(); 
+            isFormDirty = false; 
+            closeModal('recipeModal'); 
+            showToast("Ricetta salvata!");
             if(!currentRecipeId) renderRecipesUI();
         }
 
